@@ -493,12 +493,17 @@ class Sender:
 						timeout=SERIAL_TIMEOUT,
 						xonxoff=False,
 						rtscts=False)
-		# Toggle DTR to reset Arduino
-		try:
-			self.serial.setDTR(0)
-		except IOError:
+		if CNC.serialdtrreset:
+			# Toggle DTR to reset Arduino
+			try:
+				self.serial.setDTR(0)
+			except IOError:
+				pass
+			time.sleep(1)
+		else:
+			# NOTE to prevent an Arduino reset on Linux, you need to execute
+			# "stty -F /dev/ttyACM0 -hupcl" once after boot (use the correct port)
 			pass
-		time.sleep(1)
 		CNC.vars["state"] = CONNECTED
 		CNC.vars["color"] = STATECOLOR[CNC.vars["state"]]
 		#self.state.config(text=CNC.vars["state"],
@@ -506,11 +511,12 @@ class Sender:
 		# toss any data already received, see
 		# http://pyserial.sourceforge.net/pyserial_api.html#serial.Serial.flushInput
 		self.serial.flushInput()
-		try:
-			self.serial.setDTR(1)
-		except IOError:
-			pass
-		time.sleep(1)
+		if CNC.serialdtrreset:
+			try:
+				self.serial.setDTR(1)
+			except IOError:
+				pass
+			time.sleep(1)
 #		self.serial_write(b"\n\n") # serial_write should be handling this
 		self.serial_write("\n\n")
 		self._gcount = 0

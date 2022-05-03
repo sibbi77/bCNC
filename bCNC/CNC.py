@@ -678,6 +678,7 @@ class CNC:
 	comment        = ""	# last parsed comment
 	developer      = False
 	drozeropad     = 0
+	serialdtrreset = True  # toggle DTR when opening the serial port
 	vars           = {
 			"prbx"       : 0.0,
 			"prby"       : 0.0,
@@ -866,6 +867,10 @@ class CNC:
 		except: pass
 		try:
 		  CNC.footer  = config.get(section, "footer")
+		except: pass
+
+		try:
+		  CNC.serialdtrreset = bool(int(config.get(section, "serialdtrreset")))
 		except: pass
 
 		if CNC.inch:
