@@ -7,3 +7,4 @@ bCNC.egg-info
 .eggs
 dist
 build
+/venv/
