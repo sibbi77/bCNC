@@ -1,3 +1,4 @@
+# cython: language_level=2
 from libc.stdio cimport *                                                                
 from libc.string cimport memcpy, strcmp, strstr, strcpy
 
@@ -7,6 +8,18 @@ IF UNAME_SYSNAME == 'Windows':
 ELSE:
     cdef extern from 'unistd.h':
         int dup(int fd)
+
+IF UNAME_SYSNAME == 'Linux':
+    cdef extern from 'locale.h':
+        ctypedef struct locale_t:
+            pass
+
+        locale_t uselocale(locale_t __dataset)
+        locale_t newlocale(int __category_mask, const char *__locale,
+                           locale_t __base)
+        void freelocale(locale_t __dataset)
+
+        enum: LC_NUMERIC_MASK
 
 import numpy as np
 cimport numpy as np
@@ -21,7 +34,7 @@ cdef packed struct Facet:
 dtype = np.dtype([
     ('normals', np.float32, 3),
     ('vectors', np.float32, (3, 3)),
-    ('attr', np.uint16, 1),
+    ('attr', np.uint16, (1,)),
 ])
 
 DEF ALLOC_SIZE = 200000
@@ -89,6 +102,12 @@ def ascii_read(fh, buf):
     cdef size_t pos = 0
     cdef State state 
 
+
+    IF UNAME_SYSNAME == 'Linux':
+        cdef locale_t new_locale = newlocale(LC_NUMERIC_MASK, 'C',
+                                             <locale_t>NULL)
+        cdef locale_t old_locale = uselocale(new_locale)
+
     try:
         state.size = len(buf)
         memcpy(state.buf, <char*> buf, state.size)
@@ -146,6 +165,11 @@ def ascii_read(fh, buf):
             pos = ftell(state.fp) - state.size + state.pos
             fclose(state.fp)
             fh.seek(pos, SEEK_SET)
+
+        IF UNAME_SYSNAME == 'Linux':
+            uselocale(old_locale)
+            freelocale(new_locale)
+
 
 def ascii_write(fh, name, np.ndarray[Facet, mode = 'c', cast=True] arr):
     cdef FILE* fp

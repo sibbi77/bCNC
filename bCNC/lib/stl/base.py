@@ -1,10 +1,13 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
-#import enum
+import enum
 import math
 import numpy
 import logging
-import collections
+try:  # pragma: no cover
+    from collections import abc
+except ImportError:  # pragma: no cover
+    import collections as abc
 
 from python_utils import logger
 
@@ -18,7 +21,7 @@ VECTORS = 3
 DIMENSIONS = 3
 
 
-class Dimension():
+class Dimension(enum.IntEnum):
     #: X index (for example, `mesh.v0[0][X]`)
     X = 0
     #: Y index (for example, `mesh.v0[0][Y]`)
@@ -33,7 +36,7 @@ Y = Dimension.Y
 Z = Dimension.Z
 
 
-class RemoveDuplicates():
+class RemoveDuplicates(enum.Enum):
     '''
     Choose whether to remove no duplicates, leave only a single of the
     duplicates or remove all duplicates (leaving holes).
@@ -44,10 +47,10 @@ class RemoveDuplicates():
 
     @classmethod
     def map(cls, value):
-        if value and value in cls:
-            pass
-        elif value:
+        if value is True:
             value = cls.SINGLE
+        elif value and value in cls:
+            pass
         else:
             value = cls.NONE
 
@@ -74,7 +77,7 @@ def logged(class_):
 
 
 @logged
-class BaseMesh(logger.Logged, collections.Mapping):
+class BaseMesh(logger.Logged, abc.Mapping):
     '''
     Mesh object with easy access to the vectors through v0, v1 and v2.
     The normals, areas, min, max and units are calculated automatically.
@@ -182,7 +185,7 @@ class BaseMesh(logger.Logged, collections.Mapping):
         if remove_empty_areas:
             data = self.remove_empty_areas(data)
 
-        if RemoveDuplicates.map(remove_duplicate_polygons):
+        if RemoveDuplicates.map(remove_duplicate_polygons).value:
             data = self.remove_duplicate_polygons(data,
                                                   remove_duplicate_polygons)
 
@@ -310,9 +313,22 @@ class BaseMesh(logger.Logged, collections.Mapping):
         squared_areas = (normals ** 2).sum(axis=1)
         return data[squared_areas > AREA_SIZE_THRESHOLD ** 2]
 
-    def update_normals(self):
-        '''Update the normals for all points'''
-        self.normals[:] = numpy.cross(self.v1 - self.v0, self.v2 - self.v0)
+    def update_normals(self, update_areas=True):
+        '''Update the normals and areas for all points'''
+        normals = numpy.cross(self.v1 - self.v0, self.v2 - self.v0)
+
+        if update_areas:
+            self.update_areas(normals)
+
+        self.normals[:] = normals
+
+    def get_unit_normals(self):
+        normals = self.normals.copy()
+        normal = numpy.linalg.norm(normals, axis=1)
+        non_zero = normal > 0
+        if non_zero.any():
+            normals[non_zero] /= normal[non_zero][:, None]
+        return normals
 
     def update_min(self):
         self._min = self.vectors.min(axis=(0, 1))
@@ -320,20 +336,28 @@ class BaseMesh(logger.Logged, collections.Mapping):
     def update_max(self):
         self._max = self.vectors.max(axis=(0, 1))
 
-    def update_areas(self):
-        areas = .5 * numpy.sqrt((self.normals ** 2).sum(axis=1))
+    def update_areas(self, normals=None):
+        if normals is None:
+            normals = numpy.cross(self.v1 - self.v0, self.v2 - self.v0)
+
+        areas = .5 * numpy.sqrt((normals ** 2).sum(axis=1))
         self.areas = areas.reshape((areas.size, 1))
 
     def check(self):
-        if (self.normals.sum(axis=0) >= 1e-4).any():
+        '''Check the mesh is valid or not'''
+        return self.is_closed()
+
+    def is_closed(self):  # pragma: no cover
+        """Check the mesh is closed or not"""
+        if numpy.isclose(self.normals.sum(axis=0), 0, atol=1e-4).all():
+            return True
+        else:
             self.warning('''
             Your mesh is not closed, the mass methods will not function
             correctly on this mesh.  For more info:
             https://github.com/WoLpH/numpy-stl/issues/69
             '''.strip())
             return False
-        else:
-            return True
 
     def get_mass_properties(self):
         '''
@@ -424,7 +448,7 @@ class BaseMesh(logger.Logged, collections.Mapping):
         axis = numpy.asarray(axis)
         # No need to rotate if there is no actual rotation
         if not axis.any():
-            return numpy.zeros((3, 3))
+            return numpy.identity(3)
 
         theta = 0.5 * numpy.asarray(theta)
 
@@ -467,8 +491,18 @@ class BaseMesh(logger.Logged, collections.Mapping):
         self.rotate_using_matrix(self.rotation_matrix(axis, theta), point)
 
     def rotate_using_matrix(self, rotation_matrix, point=None):
+        '''
+        Rotate using a given rotation matrix and optional rotation point
+
+        Note that this rotation produces clockwise rotations for positive
+        angles which is arguably incorrect but will remain for legacy reasons.
+        For more details, read here:
+        https://github.com/WoLpH/numpy-stl/issues/166
+        '''
+
+        identity = numpy.identity(rotation_matrix.shape[0])
         # No need to rotate if there is no actual rotation
-        if not rotation_matrix.any():
+        if not rotation_matrix.any() or (identity == rotation_matrix).all():
             return
 
         if isinstance(point, (numpy.ndarray, list, tuple)) and len(point) == 3:
@@ -488,6 +522,10 @@ class BaseMesh(logger.Logged, collections.Mapping):
                 # Simply apply the rotation
                 return matrix.dot(rotation_matrix)
 
+        # Rotate the normals
+        self.normals[:] = _rotate(self.normals[:])
+
+        # Rotate the vectors
         for i in range(3):
             self.vectors[:, i] = _rotate(self.vectors[:, i])
 
@@ -559,3 +597,61 @@ class BaseMesh(logger.Logged, collections.Mapping):
     def __iter__(self):
         for point in self.points:
             yield point
+
+    def get_mass_properties_with_density(self, density):
+        # add density for mesh,density unit kg/m3 when mesh is unit is m
+        self.check()
+
+        def subexpression(x):
+            w0, w1, w2 = x[:, 0], x[:, 1], x[:, 2]
+            temp0 = w0 + w1
+            f1 = temp0 + w2
+            temp1 = w0 * w0
+            temp2 = temp1 + w1 * temp0
+            f2 = temp2 + w2 * f1
+            f3 = w0 * temp1 + w1 * temp2 + w2 * f2
+            g0 = f2 + w0 * (f1 + w0)
+            g1 = f2 + w1 * (f1 + w1)
+            g2 = f2 + w2 * (f1 + w2)
+            return f1, f2, f3, g0, g1, g2
+
+        x0, x1, x2 = self.x[:, 0], self.x[:, 1], self.x[:, 2]
+        y0, y1, y2 = self.y[:, 0], self.y[:, 1], self.y[:, 2]
+        z0, z1, z2 = self.z[:, 0], self.z[:, 1], self.z[:, 2]
+        a1, b1, c1 = x1 - x0, y1 - y0, z1 - z0
+        a2, b2, c2 = x2 - x0, y2 - y0, z2 - z0
+        d0, d1, d2 = b1 * c2 - b2 * c1, a2 * c1 - a1 * c2, a1 * b2 - a2 * b1
+
+        f1x, f2x, f3x, g0x, g1x, g2x = subexpression(self.x)
+        f1y, f2y, f3y, g0y, g1y, g2y = subexpression(self.y)
+        f1z, f2z, f3z, g0z, g1z, g2z = subexpression(self.z)
+
+        intg = numpy.zeros((10))
+        intg[0] = sum(d0 * f1x)
+        intg[1:4] = sum(d0 * f2x), sum(d1 * f2y), sum(d2 * f2z)
+        intg[4:7] = sum(d0 * f3x), sum(d1 * f3y), sum(d2 * f3z)
+        intg[7] = sum(d0 * (y0 * g0x + y1 * g1x + y2 * g2x))
+        intg[8] = sum(d1 * (z0 * g0y + z1 * g1y + z2 * g2y))
+        intg[9] = sum(d2 * (x0 * g0z + x1 * g1z + x2 * g2z))
+        intg /= numpy.array([6, 24, 24, 24, 60, 60, 60, 120, 120, 120])
+        volume = intg[0]
+        cog = intg[1:4] / volume
+        cogsq = cog ** 2
+        vmass = volume * density
+        inertia = numpy.zeros((3, 3))
+
+        inertia[0, 0] = (intg[5] + intg[6]) * density - vmass * (
+            cogsq[1] + cogsq[2])
+        inertia[1, 1] = (intg[4] + intg[6]) * density - vmass * (
+            cogsq[2] + cogsq[0])
+        inertia[2, 2] = (intg[4] + intg[5]) * density - vmass * (
+            cogsq[0] + cogsq[1])
+        inertia[0, 1] = inertia[1, 0] = -(
+            intg[7] * density - vmass * cog[0] * cog[1])
+        inertia[1, 2] = inertia[2, 1] = -(
+            intg[8] * density - vmass * cog[1] * cog[2])
+        inertia[0, 2] = inertia[2, 0] = -(
+            intg[9] * density - vmass * cog[2] * cog[0])
+
+        return volume, vmass, cog, inertia
+

@@ -1,4 +1,3 @@
-from __future__ import absolute_import
 import sys
 import random
 import argparse
@@ -30,7 +29,7 @@ def _get_name(args):
         args.name,
         getattr(args.outfile, 'name', None),
         getattr(args.infile, 'name', None),
-        'numpy-stl-%06d' % random.randint(0, 1e6),
+        'numpy-stl-%06d' % random.randint(0, 1_000_000),
     ]
 
     for name in names:  # pragma: no branch
@@ -77,7 +76,7 @@ def to_ascii():
 
 
 def to_binary():
-    parser = _get_parser('Convert STL files to ASCII (text) format')
+    parser = _get_parser('Convert STL files to binary format')
     args = parser.parse_args()
     name = _get_name(args)
     stl_file = stl.StlMesh(filename=name, fh=args.infile,
@@ -86,3 +85,4 @@ def to_binary():
                            speedups=not args.disable_speedups)
     stl_file.save(name, args.outfile, mode=stl.BINARY,
                   update_normals=not args.use_file_normals)
+
