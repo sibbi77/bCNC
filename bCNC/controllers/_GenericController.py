@@ -63,7 +63,10 @@ class _GenericController:
 			self.hardResetPre()
 			self.master.openClose()
 			self.hardResetAfter()
+		temp = CNC.serialdtrreset
+		CNC.serialdtrreset = True  # here, we require the DTR reset
 		self.master.openClose()
+		CNC.serialdtrreset = temp
 		self.master.stopProbe()
 		self.master._alarm = False
 		CNC.vars["_OvChanged"] = True	# force a feed change if any
